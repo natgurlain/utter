@@ -43,6 +43,12 @@ enum Main {
 
             let engine = pickEngine(engineName, locale: locale)
             log("cleanup:  \(engine?.label ?? "none")")
+            if case .local(let url) = engine {
+                // The app keeps the model loaded; time loading separately from cleanup.
+                let loadStart = Date()
+                await LocalCleanup.shared.preload(url)
+                log(String(format: "load:     %.2fs", Date().timeIntervalSince(loadStart)))
+            }
             let start = Date()
             let result = await PostProcessor.process(raw, locale: locale, vocabulary: vocabulary, engine: engine)
             log(String(format: "time:     %.2fs%@", Date().timeIntervalSince(start), result.cleanedBy == nil ? " (raw kept)" : ""))
