@@ -39,8 +39,10 @@ final class Transcriber {
 
     var onPartial: ((String) -> Void)?
     var onLevel: ((Float) -> Void)?
+    /// Names and terms from your vocabulary, passed to the recognizer as hints.
+    var contextualStrings: [String] = []
 
-    private var locale: Locale?
+    private(set) var locale: Locale?
     private var engine: Engine = .dictation
     private var analyzerFormat: AVAudioFormat?
 
@@ -112,7 +114,8 @@ final class Transcriber {
 
         self.analyzer = analyzer
         self.input = continuation
-        analyzerStart = Task { try await analyzer.start(inputSequence: stream) }
+        let hints = contextualStrings
+        analyzerStart = Task { try await Self.start(analyzer, input: stream, hints: hints) }
 
         inputNode.installTap(
             onBus: 0, bufferSize: 1024, format: hardwareFormat,
@@ -167,7 +170,7 @@ final class Transcriber {
         default:
             throw TranscriberError.notPrepared
         }
-        try await analyzer.start(inputSequence: stream)
+        try await Self.start(analyzer, input: stream, hints: contextualStrings)
         while file.framePosition < file.length,
             let chunk = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096)
         {
@@ -182,6 +185,22 @@ final class Transcriber {
     }
 
     // MARK: - Private
+
+    /// Biases recognition toward your vocabulary, then starts analysis.
+    private static func start(
+        _ analyzer: SpeechAnalyzer, input: AsyncStream<AnalyzerInput>, hints: [String]
+    ) async throws {
+        if !hints.isEmpty {
+            let context = AnalysisContext()
+            context.contextualStrings[.general] = hints
+            do {
+                try await analyzer.setContext(context)
+            } catch {
+                NSLog("Utter: couldn't apply vocabulary hints: \(error.localizedDescription)")
+            }
+        }
+        try await analyzer.start(inputSequence: input)
+    }
 
     private static func allSupportedIDs() async -> Set<String> {
         let speech = await SpeechTranscriber.supportedLocales

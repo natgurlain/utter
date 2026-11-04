@@ -16,10 +16,12 @@ final class DictationController: ObservableObject {
     @Published private(set) var phase: Phase = .preparing("Starting…")
     @Published private(set) var languages: [LanguageOption] = []
     @Published private(set) var activeLanguage: String?
+    @Published private(set) var installedModels: [URL] = []
 
     let settings = Settings.shared
     let permissions = Permissions()
     let launchAtLogin = LaunchAtLogin()
+    let vocabulary = VocabularyStore()
 
     private let transcriber = Transcriber()
     private let indicator = IndicatorPanel()
@@ -47,6 +49,21 @@ final class DictationController: ObservableObject {
             guard let self, id != self.activeLanguage else { return }
             Task { await self.prepare(id) }
         }.store(in: &subscriptions)
+
+        transcriber.contextualStrings = vocabulary.vocabulary.terms
+        vocabulary.$vocabulary.sink { [weak self] vocabulary in
+            self?.transcriber.contextualStrings = vocabulary.terms
+        }.store(in: &subscriptions)
+
+        Publishers.Merge3(
+            settings.$cleanupEnabled.map { _ in () },
+            settings.$preferAppleModel.map { _ in () },
+            settings.$localModelName.map { _ in () }
+        )
+        .dropFirst(3)
+        .debounce(for: .milliseconds(200), scheduler: RunLoop.main)
+        .sink { [weak self] in self?.warmUpCleanup() }
+        .store(in: &subscriptions)
 
         hotkey.start()
         Task { await bootstrap() }
@@ -82,6 +99,49 @@ final class DictationController: ObservableObject {
         Task { await prepare(settings.localeID) }
     }
 
+    // MARK: - Cleanup
+
+    /// The model that will tidy text in the current language, if any.
+    var cleanupEngine: CleanupEngine? {
+        guard settings.cleanupEnabled, let locale = transcriber.locale else { return nil }
+        let apple = AppleCleanup.supports(locale)
+        if apple, settings.preferAppleModel { return .apple }
+        if let url = selectedLocalModel { return .local(url) }
+        return apple ? .apple : nil
+    }
+
+    var selectedLocalModel: URL? {
+        installedModels.first { $0.lastPathComponent == settings.localModelName } ?? installedModels.first
+    }
+
+    /// One line explaining what cleanup will do right now.
+    var cleanupStatus: String {
+        guard settings.cleanupEnabled else { return "Cleanup is off" }
+        let language = activeLanguage.flatMap { Locale.current.localizedString(forIdentifier: $0) } ?? "this language"
+        switch cleanupEngine {
+        case .apple: return "Tidying \(language) with Apple Intelligence"
+        case .local(let url): return "Tidying \(language) with \(url.lastPathComponent) (local)"
+        case nil:
+            return "No cleanup model for \(language): download a local model or turn on Apple Intelligence"
+        }
+    }
+
+    func refreshModels() {
+        installedModels = LocalCleanup.installedModels()
+        objectWillChange.send()
+    }
+
+    /// Loads the local model in the background so the first dictation isn't slow,
+    /// and frees its memory when it isn't the active engine.
+    private func warmUpCleanup() {
+        refreshModels()
+        if case .local(let url) = cleanupEngine {
+            Task.detached(priority: .utility) { await LocalCleanup.shared.preload(url) }
+        } else {
+            Task { await LocalCleanup.shared.unload() }
+        }
+    }
+
     // MARK: - Setup
 
     private func bootstrap() async {
@@ -103,6 +163,7 @@ final class DictationController: ObservableObject {
             activeLanguage = resolved
             if settings.localeID != resolved { settings.localeID = resolved }
             phase = .ready
+            warmUpCleanup()
         } catch {
             phase = .failed(error.localizedDescription)
         }
@@ -169,13 +230,21 @@ final class DictationController: ObservableObject {
         showIndicator?.cancel()
         phase = .finishing
         indicator.model.finishing = true
+        let engine = cleanupEngine
         Task {
-            let text: String
+            let raw: String
             do {
-                text = try await transcriber.stop()
+                raw = try await transcriber.stop()
             } catch {
-                text = ""
+                raw = ""
                 NSLog("Utter: transcription failed: \(error.localizedDescription)")
+            }
+            var text = raw
+            if !raw.isEmpty, let locale = transcriber.locale {
+                if engine != nil { indicator.model.tidying = true }
+                text = await PostProcessor.process(
+                    raw, locale: locale, vocabulary: vocabulary.vocabulary, engine: engine
+                ).text
             }
             indicator.hide()
             phase = .ready

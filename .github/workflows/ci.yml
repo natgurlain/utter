@@ -20,5 +20,8 @@ jobs:
       - name: Unit tests
         run: swift test
 
+      - name: Metal Toolchain (MLX shaders)
+        run: xcodebuild -downloadComponent MetalToolchain
+
       - name: Build app bundle (ad-hoc signed)
         run: SIGN_IDENTITY=- scripts/build-app.sh release

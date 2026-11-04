@@ -7,12 +7,14 @@ final class IndicatorModel: ObservableObject {
     @Published var level: Float = 0
     @Published var handsFree = false
     @Published var finishing = false
+    @Published var tidying = false
 
     func reset() {
         text = ""
         level = 0
         handsFree = false
         finishing = false
+        tidying = false
     }
 }
 
@@ -79,6 +81,7 @@ private struct IndicatorView: View {
     }
 
     private var hint: String {
+        if model.tidying { return "Tidying up on-device…" }
         if model.finishing { return "Inserting…" }
         if model.handsFree { return "Hands-free · press the key again to insert · Esc cancels" }
         return "Release to insert · Esc cancels"

@@ -13,6 +13,11 @@ struct UtterApp: App {
         } label: {
             Image(systemName: controller.menuBarSymbol)
         }
+
+        Window("Utter Settings", id: "settings") {
+            SettingsView(controller: controller)
+        }
+        .windowResizability(.contentSize)
     }
 }
 
@@ -21,6 +26,7 @@ private struct MenuContent: View {
     @ObservedObject var settings: Settings
     @ObservedObject var permissions: Permissions
     @ObservedObject var launchAtLogin: LaunchAtLogin
+    @Environment(\.openWindow) private var openWindow
 
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
@@ -55,8 +61,15 @@ private struct MenuContent: View {
             }
         }
 
+        Toggle("Tidy Up Text (On-Device)", isOn: $settings.cleanupEnabled)
         Toggle("Restore Clipboard After Inserting", isOn: $settings.restoreClipboard)
         Toggle("Add Space After Text", isOn: $settings.addTrailingSpace)
+
+        Button("Vocabulary & Cleanup Settings…") {
+            openWindow(id: "settings")
+            NSApp.activate()
+        }
+        .keyboardShortcut(",")
 
         Divider()
 

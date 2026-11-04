@@ -60,11 +60,29 @@ final class Settings: ObservableObject {
         didSet { defaults.set(addTrailingSpace, forKey: Keys.addTrailingSpace) }
     }
 
+    /// Tidy punctuation and filler words with an on-device model after dictating.
+    @Published var cleanupEnabled: Bool {
+        didSet { defaults.set(cleanupEnabled, forKey: Keys.cleanupEnabled) }
+    }
+
+    /// Prefer Apple Intelligence when it supports the language (otherwise the local model).
+    @Published var preferAppleModel: Bool {
+        didSet { defaults.set(preferAppleModel, forKey: Keys.preferAppleModel) }
+    }
+
+    /// Folder name of the local model in Application Support/Utter/Models; empty = first installed.
+    @Published var localModelName: String {
+        didSet { defaults.set(localModelName, forKey: Keys.localModelName) }
+    }
+
     private enum Keys {
         static let triggerKey = "triggerKey"
         static let localeID = "localeID"
         static let restoreClipboard = "restoreClipboard"
         static let addTrailingSpace = "addTrailingSpace"
+        static let cleanupEnabled = "cleanupEnabled"
+        static let preferAppleModel = "preferAppleModel"
+        static let localModelName = "localModelName"
     }
 
     private init() {
@@ -72,5 +90,8 @@ final class Settings: ObservableObject {
         localeID = defaults.string(forKey: Keys.localeID) ?? Locale.current.identifier(.bcp47)
         restoreClipboard = defaults.object(forKey: Keys.restoreClipboard) as? Bool ?? true
         addTrailingSpace = defaults.object(forKey: Keys.addTrailingSpace) as? Bool ?? true
+        cleanupEnabled = defaults.object(forKey: Keys.cleanupEnabled) as? Bool ?? true
+        preferAppleModel = defaults.object(forKey: Keys.preferAppleModel) as? Bool ?? true
+        localModelName = defaults.string(forKey: Keys.localModelName) ?? ""
     }
 }

@@ -1,9 +1,12 @@
 #!/bin/bash
-# Builds build/Utter.app from the Swift package and signs it.
+# Builds build/Utter.app and signs it.
 #
 #   scripts/build-app.sh            # release build
 #   scripts/build-app.sh debug      # debug build
 #   SIGN_IDENTITY="My Cert" scripts/build-app.sh
+#
+# Uses xcodebuild rather than `swift build`: the MLX package (local text
+# cleanup) ships Metal shaders that only Xcode's build system compiles.
 #
 # macOS ties the Accessibility permission to the app's signature. Ad-hoc
 # signatures change on every build, so you'd have to re-grant it each time.
@@ -13,17 +16,32 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CONFIG="${1:-release}"
+case "${1:-release}" in
+  debug | Debug) CONFIG=Debug ;;
+  *) CONFIG=Release ;;
+esac
 APP="build/Utter.app"
+DERIVED=".build/xcode"
+PRODUCTS="$DERIVED/Build/Products/$CONFIG"
 
-swift build -c "$CONFIG"
-BIN_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
+xcodebuild build \
+  -scheme Utter \
+  -configuration "$CONFIG" \
+  -destination "platform=macOS,arch=arm64" \
+  -derivedDataPath "$DERIVED" \
+  -skipMacroValidation \
+  -skipPackagePluginValidation \
+  -quiet
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-/bin/cp -f "$BIN_DIR/Utter" "$APP/Contents/MacOS/Utter"
+/bin/cp -f "$PRODUCTS/Utter" "$APP/Contents/MacOS/Utter"
 /bin/cp -f Resources/Info.plist "$APP/Contents/Info.plist"
 /bin/cp -f Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+# Resource bundles from packages (MLX's compiled Metal library, tokenizer data…).
+for bundle in "$PRODUCTS"/*.bundle; do
+  [ -e "$bundle" ] && /usr/bin/ditto "$bundle" "$APP/Contents/Resources/$(basename "$bundle")"
+done
 
 IDENTITY="${SIGN_IDENTITY:-}"
 if [ -z "$IDENTITY" ]; then
