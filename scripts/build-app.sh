@@ -23,6 +23,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 /bin/cp -f "$BIN_DIR/Utter" "$APP/Contents/MacOS/Utter"
 /bin/cp -f Resources/Info.plist "$APP/Contents/Info.plist"
+/bin/cp -f Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 IDENTITY="${SIGN_IDENTITY:-}"
 if [ -z "$IDENTITY" ]; then

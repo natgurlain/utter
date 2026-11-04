@@ -5,7 +5,11 @@ struct UtterApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContent(controller: controller, settings: controller.settings, permissions: controller.permissions)
+            MenuContent(
+                controller: controller,
+                settings: controller.settings,
+                permissions: controller.permissions,
+                launchAtLogin: controller.launchAtLogin)
         } label: {
             Image(systemName: controller.menuBarSymbol)
         }
@@ -16,6 +20,11 @@ private struct MenuContent: View {
     @ObservedObject var controller: DictationController
     @ObservedObject var settings: Settings
     @ObservedObject var permissions: Permissions
+    @ObservedObject var launchAtLogin: LaunchAtLogin
+
+    private var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    }
 
     var body: some View {
         Text(controller.statusText)
@@ -25,6 +34,7 @@ private struct MenuContent: View {
         }
         if !permissions.accessibility {
             Button("Grant Accessibility (to type into apps)…") { permissions.openAccessibilitySettings() }
+            Button("Already Granted? Relaunch Utter") { permissions.relaunch() }
         }
         if permissions.microphone != .authorized {
             Button("Grant Microphone Access…") { permissions.openMicrophoneSettings() }
@@ -50,12 +60,25 @@ private struct MenuContent: View {
 
         Divider()
 
-        Text("Tap the key for hands-free · Esc cancels")
-        Text("Speech is processed on this Mac and never saved")
+        if launchAtLogin.isInstalled {
+            Toggle(
+                "Launch at Login",
+                isOn: Binding(get: { launchAtLogin.isEnabled }, set: { launchAtLogin.setEnabled($0) }))
+            if launchAtLogin.needsApproval {
+                Button("Approve in Login Items…") { launchAtLogin.openLoginItemsSettings() }
+            }
+        } else {
+            Text("Launch at Login: install to Applications first")
+        }
 
         Divider()
 
-        Button("Quit Utter") { NSApp.terminate(nil) }
+        Text("Tap the key for hands-free · Esc cancels")
+        Text("Speech stays on this Mac and is never saved")
+
+        Divider()
+
+        Button("Quit Utter \(version)") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
     }
 }

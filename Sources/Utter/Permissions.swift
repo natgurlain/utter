@@ -33,6 +33,16 @@ final class Permissions: ObservableObject {
         open("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
     }
 
+    /// Starts a fresh copy of Utter and quits this one. macOS sometimes only
+    /// applies a newly granted Accessibility permission to a new process.
+    func relaunch() {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
+    }
+
     private func open(_ url: String) {
         if let url = URL(string: url) { NSWorkspace.shared.open(url) }
     }

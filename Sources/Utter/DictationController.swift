@@ -19,6 +19,7 @@ final class DictationController: ObservableObject {
 
     let settings = Settings.shared
     let permissions = Permissions()
+    let launchAtLogin = LaunchAtLogin()
 
     private let transcriber = Transcriber()
     private let indicator = IndicatorPanel()
@@ -84,6 +85,7 @@ final class DictationController: ObservableObject {
     // MARK: - Setup
 
     private func bootstrap() async {
+        launchAtLogin.enableOnFirstInstalledLaunch()
         languages = await Transcriber.languages()
         await permissions.requestMicrophone()
         if !permissions.accessibility {
