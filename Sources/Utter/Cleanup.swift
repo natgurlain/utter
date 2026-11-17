@@ -1,5 +1,6 @@
 import Foundation
 import FoundationModels
+import MLX
 import MLXLLM
 import MLXLMCommon
 import Tokenizers
@@ -41,11 +42,19 @@ enum AppleCleanup {
 /// An open model run locally with MLX, loaded from
 /// ~/Library/Application Support/Utter/Models/<name>/ (see scripts/download-model.sh).
 /// Kept in memory once loaded so later dictations are fast.
+///
+/// The instructions are the same for every request, so they're run through the
+/// model once and their KV cache is kept. Each request starts from a copy of
+/// that cache and only processes the dictated text, which takes the prompt
+/// step from seconds to a fraction of a second.
 actor LocalCleanup {
     static let shared = LocalCleanup()
 
     private var container: ModelContainer?
     private var loadedURL: URL?
+    private var prefix: PromptPrefix?
+
+    private static let parameters = GenerateParameters(maxTokens: 1024, temperature: 0)
 
     /// Model folders that contain a config and weights.
     nonisolated static func installedModels() -> [URL] {
@@ -60,9 +69,14 @@ actor LocalCleanup {
         .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
-    func preload(_ url: URL) async {
+    /// Loads the model and, given the instructions, caches them and runs one
+    /// short cleanup so the GPU kernels are compiled before the first dictation.
+    func preload(_ url: URL, instructions: String? = nil) async {
         do {
             _ = try await load(url)
+            if let instructions {
+                _ = try await clean("um hello there", instructions: instructions, model: url)
+            }
         } catch {
             NSLog("Utter: couldn't load cleanup model \(url.lastPathComponent): \(error.localizedDescription)")
         }
@@ -71,23 +85,79 @@ actor LocalCleanup {
     func unload() {
         container = nil
         loadedURL = nil
+        prefix = nil
     }
 
     func clean(_ text: String, instructions: String, model url: URL) async throws -> String {
         let container = try await load(url)
-        let session = ChatSession(
-            container, instructions: instructions,
-            generateParameters: GenerateParameters(maxTokens: 1024, temperature: 0))
-        return try await session.respond(to: text)
+        let cached = prefix?.instructions == instructions ? prefix : nil
+        let (output, built) = try await container.perform { context -> (String, PromptPrefix?) in
+            let prefix = try cached ?? PromptPrefix(instructions: instructions, context: context)
+            let prompt = try PromptPrefix.render(user: text, instructions: instructions, tokenizer: context.tokenizer)
+
+            // Continue from the cached instructions when the prompt starts with them.
+            let input: LMInput
+            let cache: [KVCache]?
+            if let prefix, prompt.count > prefix.tokens.count, prompt.starts(with: prefix.tokens) {
+                input = LMInput(tokens: MLXArray(Array(prompt[prefix.tokens.count...])))
+                cache = prefix.cache.map { $0.copy() }
+            } else {
+                input = LMInput(tokens: MLXArray(prompt))
+                cache = nil
+            }
+
+            var output = ""
+            for await generation in try generate(input: input, cache: cache, parameters: Self.parameters, context: context) {
+                if case .chunk(let chunk) = generation { output += chunk }
+            }
+            return (output, prefix)
+        }
+        if let built, built.instructions == instructions { prefix = built }
+        return output
     }
 
     private func load(_ url: URL) async throws -> ModelContainer {
         if let container, loadedURL == url { return container }
         container = nil
+        prefix = nil
         let loaded = try await LLMModelFactory.shared.loadContainer(from: url, using: TransformersTokenizerLoader())
         container = loaded
         loadedURL = url
         return loaded
+    }
+}
+
+/// The instructions' tokens and the KV cache after running them through the model.
+/// The cache is only read (copied) once built, so sharing it is safe.
+private final class PromptPrefix: @unchecked Sendable {
+    let instructions: String
+    let tokens: [Int]
+    let cache: [KVCache]
+
+    /// Returns nil when the chat template doesn't give a stable prefix to cache.
+    init?(instructions: String, context: ModelContext) throws {
+        // The part of the prompt shared by any two user messages is the cacheable prefix.
+        let a = try Self.render(user: "a", instructions: instructions, tokenizer: context.tokenizer)
+        let b = try Self.render(user: "b", instructions: instructions, tokenizer: context.tokenizer)
+        let length = zip(a, b).prefix { $0 == $1 }.count
+        let cache = try context.model.newCache(parameters: nil)
+        guard length > 0, canTrimPromptCache(cache) else { return nil }
+
+        let tokens = Array(a.prefix(length))
+        let text = LMInput.Text(tokens: MLXArray(tokens))
+        _ = context.model(text[text: .newAxis], cache: cache, state: nil)
+        eval(cache)
+
+        self.instructions = instructions
+        self.tokens = tokens
+        self.cache = cache
+    }
+
+    static func render(user: String, instructions: String, tokenizer: any MLXLMCommon.Tokenizer) throws -> [Int] {
+        try tokenizer.applyChatTemplate(messages: [
+            ["role": "system", "content": instructions],
+            ["role": "user", "content": user],
+        ])
     }
 }
 
@@ -149,8 +219,7 @@ enum PostProcessor {
             return Result(text: corrected, cleanedBy: nil)
         }
 
-        let languageName = Locale(identifier: "en").localizedString(forIdentifier: locale.identifier) ?? locale.identifier
-        let instructions = CleanupPrompt.instructions(languageName: languageName, terms: vocabulary.terms)
+        let instructions = Self.instructions(locale: locale, vocabulary: vocabulary)
         do {
             let output = try await withTimeout(timeout) {
                 switch engine {
@@ -168,6 +237,11 @@ enum PostProcessor {
             NSLog("Utter: cleanup failed, using the raw transcript: \(error.localizedDescription)")
             return Result(text: corrected, cleanedBy: nil)
         }
+    }
+
+    static func instructions(locale: Locale, vocabulary: Vocabulary) -> String {
+        let languageName = Locale(identifier: "en").localizedString(forIdentifier: locale.identifier) ?? locale.identifier
+        return CleanupPrompt.instructions(languageName: languageName, terms: vocabulary.terms)
     }
 
     private struct TimedOut: Error {}

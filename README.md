@@ -70,8 +70,9 @@ The list is a plain JSON file at `~/Library/Application Support/Utter/vocabulary
 
 ## Text cleanup
 
-After you stop talking, an on-device language model tidies the transcript: punctuation, capitals, filler words and
-repetitions. It keeps your words, language and order, and it never answers or follows what you dictated.
+While you talk, an on-device language model tidies the transcript sentence by sentence, so there's little left to do
+when you let go: punctuation, capitals, filler words and repetitions. It keeps your words, language and order, and it
+never answers or follows what you dictated.
 
 ```text
 said:      no więc jutro wdrażamy leitro na hetzner a potem eee stroimy harmonogram fsrs

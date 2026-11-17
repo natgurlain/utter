@@ -8,6 +8,7 @@ let package = Package(
         // Local open-model text cleanup (MLX on Apple silicon). Models are loaded
         // from disk only; nothing is downloaded by the app.
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", .upToNextMinor(from: "3.32.3")),
+        .package(url: "https://github.com/ml-explore/mlx-swift", .upToNextMinor(from: "0.32.3")),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
     ],
     targets: [
@@ -23,6 +24,7 @@ let package = Package(
             name: "Utter",
             dependencies: [
                 "UtterCore",
+                .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "Tokenizers", package: "swift-transformers"),

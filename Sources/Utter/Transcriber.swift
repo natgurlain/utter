@@ -37,7 +37,10 @@ final class Transcriber {
         case dictation
     }
 
-    var onPartial: ((String) -> Void)?
+    /// The transcript so far: finalized segments plus the current guess.
+    var onPartial: ((TranscriptAccumulator) -> Void)?
+    /// Each segment as soon as the recognizer finalizes it, in order.
+    var onFinal: ((String) -> Void)?
     var onLevel: ((Float) -> Void)?
     /// Names and terms from your vocabulary, passed to the recognizer as hints.
     var contextualStrings: [String] = []
@@ -227,8 +230,11 @@ final class Transcriber {
     ) async throws -> String {
         var transcript = TranscriptAccumulator()
         for try await result in results {
-            transcript.apply(String(text(result).characters), isFinal: isFinal(result))
-            onPartial?(transcript.display)
+            let segment = String(text(result).characters)
+            let final = isFinal(result)
+            transcript.apply(segment, isFinal: final)
+            if final { onFinal?(segment) }
+            onPartial?(transcript)
         }
         return transcript.result
     }
