@@ -27,7 +27,7 @@ public struct TranscriptAccumulator: Sendable {
         finalized.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    static func join(_ head: String, _ tail: String) -> String {
+    public static func join(_ head: String, _ tail: String) -> String {
         guard let last = head.last else { return tail }
         guard let first = tail.first else { return head }
         if last.isWhitespace || first.isWhitespace || ",.!?;:)".contains(first) {

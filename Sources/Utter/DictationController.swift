@@ -28,6 +28,8 @@ final class DictationController: ObservableObject {
     private let hotkey: HotkeyMonitor
     private var gesture = TriggerGesture()
     private var showIndicator: Task<Void, Never>?
+    private var live: LiveCleanup?
+    private var volatileText = ""
     private var accessibilityPoll: Timer?
     private var subscriptions = Set<AnyCancellable>()
 
@@ -41,7 +43,11 @@ final class DictationController: ObservableObject {
         hotkey.onInterrupt = { [weak self] in self?.handle(self?.gesture.interrupt() ?? .none) }
         hotkey.onEscape = { [weak self] in self?.handle(self?.gesture.escape() ?? .none) }
 
-        transcriber.onPartial = { [weak self] text in self?.indicator.model.text = text }
+        transcriber.onPartial = { [weak self] transcript in
+            self?.volatileText = transcript.volatile
+            self?.refreshLiveText()
+        }
+        transcriber.onFinal = { [weak self] segment in self?.live?.add(final: segment) }
         transcriber.onLevel = { [weak self] level in self?.indicator.model.level = level }
 
         settings.$triggerKey.dropFirst().sink { [weak self] key in self?.hotkey.key = key }.store(in: &subscriptions)
@@ -54,6 +60,11 @@ final class DictationController: ObservableObject {
         vocabulary.$vocabulary.sink { [weak self] vocabulary in
             self?.transcriber.contextualStrings = vocabulary.terms
         }.store(in: &subscriptions)
+        // The vocabulary is part of the cleanup instructions the local model keeps cached.
+        vocabulary.$vocabulary.dropFirst()
+            .debounce(for: .seconds(1), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.warmUpCleanup() }
+            .store(in: &subscriptions)
 
         Publishers.Merge3(
             settings.$cleanupEnabled.map { _ in () },
@@ -131,12 +142,13 @@ final class DictationController: ObservableObject {
         objectWillChange.send()
     }
 
-    /// Loads the local model in the background so the first dictation isn't slow,
-    /// and frees its memory when it isn't the active engine.
+    /// Loads the local model and caches the instructions in the background so the
+    /// first dictation isn't slow, and frees its memory when it isn't the active engine.
     private func warmUpCleanup() {
         refreshModels()
-        if case .local(let url) = cleanupEngine {
-            Task.detached(priority: .utility) { await LocalCleanup.shared.preload(url) }
+        if case .local(let url) = cleanupEngine, let locale = transcriber.locale {
+            let instructions = PostProcessor.instructions(locale: locale, vocabulary: vocabulary.vocabulary)
+            Task.detached(priority: .utility) { await LocalCleanup.shared.preload(url, instructions: instructions) }
         } else {
             Task { await LocalCleanup.shared.unload() }
         }
@@ -218,6 +230,12 @@ final class DictationController: ObservableObject {
         }
         phase = .listening
         indicator.model.reset()
+        volatileText = ""
+        if let locale = transcriber.locale {
+            let live = LiveCleanup(locale: locale, vocabulary: vocabulary.vocabulary, engine: cleanupEngine)
+            live.onChange = { [weak self] in self?.refreshLiveText() }
+            self.live = live
+        }
         showIndicator = Task { [weak self] in
             try? await Task.sleep(for: Self.indicatorDelay)
             guard let self, !Task.isCancelled, self.phase == .listening else { return }
@@ -230,22 +248,21 @@ final class DictationController: ObservableObject {
         showIndicator?.cancel()
         phase = .finishing
         indicator.model.finishing = true
-        let engine = cleanupEngine
+        let live = self.live
         Task {
-            let raw: String
+            var text = ""
             do {
-                raw = try await transcriber.stop()
+                // Delivers the last finalized segments to `live` before returning.
+                _ = try await transcriber.stop()
+                if let live {
+                    if live.hasPendingWork { indicator.model.tidying = true }
+                    text = await live.finish()
+                }
             } catch {
-                raw = ""
+                live?.cancel()
                 NSLog("Utter: transcription failed: \(error.localizedDescription)")
             }
-            var text = raw
-            if !raw.isEmpty, let locale = transcriber.locale {
-                if engine != nil { indicator.model.tidying = true }
-                text = await PostProcessor.process(
-                    raw, locale: locale, vocabulary: vocabulary.vocabulary, engine: engine
-                ).text
-            }
+            self.live = nil
             indicator.hide()
             phase = .ready
             insert(text)
@@ -256,11 +273,19 @@ final class DictationController: ObservableObject {
         guard phase == .listening else { return }
         showIndicator?.cancel()
         indicator.hide()
+        live?.cancel()
+        live = nil
         phase = .finishing
         Task {
             await transcriber.cancel()
             phase = .ready
         }
+    }
+
+    /// Shows tidied sentences as soon as they're ready, then the words still being heard.
+    private func refreshLiveText() {
+        guard let live else { return }
+        indicator.model.text = live.display(volatile: volatileText)
     }
 
     private func insert(_ text: String) {

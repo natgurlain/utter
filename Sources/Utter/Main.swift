@@ -9,6 +9,9 @@ import UtterCore
 ///     Utter --transcribe <audio-file> [--locale pl-PL] [--engine auto|apple|local|none] [--vocabulary <file>]
 ///     Utter --clean "<text>"          [--locale pl-PL] [--engine auto|apple|local|none] [--vocabulary <file>]
 ///
+/// Add `--live` to simulate dictating at speaking pace: sentences arrive one by
+/// one and are tidied while "speaking"; the time reported is the wait after release.
+///
 /// The raw transcript goes to stderr, the final text to stdout.
 @main
 enum Main {
@@ -44,11 +47,26 @@ enum Main {
             let engine = pickEngine(engineName, locale: locale)
             log("cleanup:  \(engine?.label ?? "none")")
             if case .local(let url) = engine {
-                // The app keeps the model loaded; time loading separately from cleanup.
+                // The app keeps the model loaded and warmed up; time that separately from cleanup.
                 let loadStart = Date()
-                await LocalCleanup.shared.preload(url)
-                log(String(format: "load:     %.2fs", Date().timeIntervalSince(loadStart)))
+                let instructions = PostProcessor.instructions(locale: locale, vocabulary: vocabulary)
+                await LocalCleanup.shared.preload(url, instructions: instructions)
+                log(String(format: "load:     %.2fs (incl. warm-up)", Date().timeIntervalSince(loadStart)))
             }
+            if arguments.contains("--live") {
+                let live = LiveCleanup(locale: locale, vocabulary: vocabulary, engine: engine)
+                for sentence in sentences(raw) {
+                    // About 2.5 words a second; the last one is finalized on release.
+                    try? await Task.sleep(for: .seconds(Double(CleanupGuard.words(sentence).count) / 2.5))
+                    live.add(final: sentence)
+                }
+                let release = Date()
+                let text = await live.finish()
+                log(String(format: "wait:     %.2fs after release", Date().timeIntervalSince(release)))
+                print(text)
+                exit(0)
+            }
+
             let start = Date()
             let result = await PostProcessor.process(raw, locale: locale, vocabulary: vocabulary, engine: engine)
             log(String(format: "time:     %.2fs%@", Date().timeIntervalSince(start), result.cleanedBy == nil ? " (raw kept)" : ""))
@@ -78,6 +96,20 @@ enum Main {
             exit(1)
         }
         return vocabulary
+    }
+
+    private static func sentences(_ text: String) -> [String] {
+        var result: [String] = []
+        var current = ""
+        for word in text.split(separator: " ") {
+            current = current.isEmpty ? String(word) : current + " " + word
+            if LiveChunker.endsSentence(current) {
+                result.append(current)
+                current = ""
+            }
+        }
+        if !current.isEmpty { result.append(current) }
+        return result
     }
 
     private static func value(after flag: String, in arguments: [String]) -> String? {
